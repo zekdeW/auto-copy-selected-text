@@ -4,7 +4,7 @@
 
 A Safari userscript that **automatically copies any selected text to the clipboard** — mouse, touch, and keyboard selections all work. Selections made inside inputs, textareas, and rich-text editors are ignored.
 
-> Version 1.7.0 · License: MIT · Works on macOS Safari, iPhone / iPad Safari, and Chromium/Firefox userscript managers.
+> Version 1.8.0 · License: MIT · Works on macOS Safari, iPhone / iPad Safari, and Chromium/Firefox userscript managers.
 
 ---
 
@@ -16,10 +16,10 @@ A Safari userscript that **automatically copies any selected text to the clipboa
 | Feature | Details |
 |---|---|
 | Mouse selection | Copies synchronously inside the `mouseup` user gesture — the most reliable path under Safari's strict clipboard rules |
-| Touch (iPhone / iPad) | Copies the moment you lift your finger (`touchend`) after a long-press word selection or handle drag; a delayed call would lose the gesture and be rejected by iOS. The touch path **never** uses the destructive hidden-textarea fallback, so the native selection UI (handles / edit menu) is never disturbed while you keep adjusting a long selection |
+| Touch (iPhone / iPad) | Copies the moment you lift your finger (`touchend`) after a long-press word selection. Selection-handle drags are handled by native iOS UI (no page events), so after you finish adjusting the copy is completed by a tiered strategy — see "How it works" |
 | Keyboard selection | Shift + Arrow keys covered via a debounced `selectionchange` (400 ms after the selection stops changing) |
 | Input exclusion (3 layers) | 1) document focus is editable -> skip; 2) event target (incl. Shadow DOM) is editable -> skip; 3) selection endpoints are editable -> skip. The focus check also prevents the WebKit pitfall where an input selection is invisible to `getSelection()` and a stale page selection gets copied by mistake |
-| Clipboard strategy | `navigator.clipboard.writeText` on secure contexts, automatic `execCommand('copy')` fallback (hidden textarea, selection preserved) for HTTP pages — mouse path only |
+| Clipboard strategy (3 tiers) | 1. `navigator.clipboard.writeText` (best, when the user gesture is still valid) 2. `document.execCommand('copy')` directly on the current selection — non-destructive, the selection and its handles survive 3. hidden-textarea fallback — last resort only; on iOS a restored programmatic selection has no native handles |
 | Anti-noise | 1.5 s dedupe window for identical text; right / middle clicks ignored; collapsed selections ignored |
 | Site blacklist | Optional `hostname` regex list to disable the script on specific sites |
 
@@ -53,7 +53,8 @@ Edit the `CONFIG` block at the top of the script:
 ```
 mouseup (left button)  --> copy synchronously (keeps user-gesture context)
 touchend               --> copy synchronously (iOS rejects clipboard writes without a fresh gesture)
-selectionchange        --> debounce 400 ms --> copy (covers double/triple-click, handle drags, keyboard)
+selectionchange        --> debounce 400 ms --> copy (covers handle drags, keyboard; handle drags are
+                                                native iOS UI and emit no page touch events)
 ```
 
 Every copy passes three editable-area checks (focus -> event target -> selection endpoints) before touching the clipboard. Duplicate text within the dedupe window is skipped, and the dedupe marker is only set after a copy actually succeeds, so failures can be retried immediately.
@@ -62,7 +63,7 @@ Every copy passes three editable-area checks (focus -> event target -> selection
 
 - `file://` pages are not matched (`@match *://*/*`).
 - On iOS, the system may show a one-time "Allow Paste" style confirmation for clipboard writes — grant it once per site.
-- Touch devices: clipboard writes go through the async Clipboard API only. If it is unavailable or rejected, the copy is silently skipped instead of running the selection-disturbing `execCommand` fallback — adjusting selection handles on iOS stays smooth.
+- Copy always completes after selection adjustments: Clipboard API, then a selection-preserving `execCommand('copy')`, and only as a last resort the hidden-textarea fallback (which may detach iOS selection handles — tap the text again to re-select).
 - No external network requests; everything runs locally.
 
 ---
@@ -77,10 +78,10 @@ Every copy passes three editable-area checks (focus -> event target -> selection
 | 功能 | 说明 |
 |---|---|
 | 鼠标选择 | 在 `mouseup` 用户手势上下文里**同步**复制——Safari 对剪贴板手势校验严格，同步路径成功率最高 |
-| 触屏（iPhone / iPad） | 长按选词、拖动选择手柄**松手瞬间**（`touchend`）同步复制；延时调用会丢失手势，会被 iOS 拒绝。触屏路径**绝不使用**破坏性的隐藏 textarea 兜底，调整长选区时原生选择 UI（手柄 / 编辑菜单）不会被打扰 |
+| 触屏（iPhone / iPad） | 长按选词**松手瞬间**（`touchend`）同步复制。拖动选择手柄由 iOS 原生 UI 处理（页面收不到触摸事件），调整完成后的复制由三级策略保证——见「工作原理」 |
 | 键盘选择 | Shift + 方向键，通过防抖的 `selectionchange`（选区停止变化 400ms 后）覆盖 |
 | 输入框排除（三道防线） | 1) 焦点在可编辑区域 -> 跳过；2) 事件落点（含 Shadow DOM）在可编辑区域 -> 跳过；3) 选区起点/终点在可编辑区域 -> 跳过。焦点检查同时规避了 WebKit 的坑：输入框内的选区对 `getSelection()` 不可见，页面残留旧选区会被误复制 |
-| 剪贴板策略 | 安全上下文用 `navigator.clipboard.writeText`；HTTP 页面自动回退 `execCommand('copy')`（隐藏 textarea，且保留原选区高亮）——仅鼠标路径 |
+| 剪贴板策略（三级） | 1. `navigator.clipboard.writeText`（手势有效时最优）2. 对当前选区直接 `execCommand('copy')`——**不破坏选区**，手柄保留 3. 隐藏 textarea 兜底——最后手段；iOS 上恢复的编程选区没有原生手柄 |
 | 防干扰 | 相同内容 1.5 秒内去重；右键/中键不触发；空选区不触发 |
 | 站点黑名单 | 可选的 `hostname` 正则列表，在指定站点停用 |
 
@@ -114,7 +115,8 @@ Tampermonkey 或 Violentmonkey 新建脚本粘贴即可（桌面端触屏路径�
 ```
 mouseup（左键）    --> 同步复制（保留用户手势上下文）
 touchend           --> 同步复制（iOS 拒绝没有新鲜手势的剪贴板写入）
-selectionchange    --> 防抖 400ms --> 复制（覆盖双击/三击、拖动手柄、键盘选择）
+selectionchange    --> 防抖 400ms --> 复制（覆盖手柄拖动、键盘选择；
+                                        手柄拖动是 iOS 原生 UI，页面收不到触摸事件）
 ```
 
 每次复制前经过三道可编辑区域检查（焦点 -> 事件落点 -> 选区端点）。去重标记只在复制**成功后**更新，失败可立即重试。
@@ -123,7 +125,7 @@ selectionchange    --> 防抖 400ms --> 复制（覆盖双击/三击、拖动手
 
 - 不匹配 `file://` 页面（`@match *://*/*`）。
 - iOS 上系统可能弹出一次性的剪贴板写入确认，按站点允许一次即可。
-- 触屏设备：剪贴板写入只走异步 Clipboard API；若不可用或被拒，将静默跳过复制，而不会执行会干扰选区的 `execCommand` 兜底——在 iOS 上拖动选择手柄始终流畅。
+- 调整选区后复制必定完成：Clipboard API → 保留选区的 `execCommand('copy')` → 最后才是隐藏 textarea 兜底（可能使 iOS 选区手柄消失——重新点选文字即可）。
 - 无任何外部网络请求，全部本地运行。
 
 ---
