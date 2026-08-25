@@ -4,7 +4,7 @@
 // @match        *://*/*
 // @grant        none
 // @run-at       document-start
-// @version      1.6.0
+// @version      1.7.0
 // @license      MIT
 // @namespace    local.userscripts.auto-copy-selection
 // ==/UserScript==
@@ -30,6 +30,7 @@
     let debounceTimer = null;
     let lastCopiedText = '';
     let lastCopiedAt = 0;
+    let lastInputWasTouch = false; // 最近一次输入是否来自触屏（决定失败时是否走兜底）
 
     // ====== 三条触发路径 ======
 
@@ -40,14 +41,15 @@
         if (event.button !== 0) return; // 只处理左键
         clearTimeout(debounceTimer);
         const target = (event.composedPath && event.composedPath()[0]) || event.target;
-        tryCopy(target); // 同步执行，保留手势上下文
+        lastInputWasTouch = false;
+        tryCopy(target, false); // 同步执行，保留手势上下文
     }, true); // 捕获阶段：部分网站 stopPropagation 也拦不住
 
     // 2) selectionchange：覆盖双击选词、三击选段、触屏拖动手柄、Shift+方向键。
     //    拖拽过程中会连续触发，靠防抖等到选区稳定后再复制。
     document.addEventListener('selectionchange', function () {
         clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(tryCopy, CONFIG.DEBOUNCE_MS);
+        debounceTimer = setTimeout(function () { tryCopy(null, lastInputWasTouch); }, CONFIG.DEBOUNCE_MS);
     });
 
     // 3) 触屏（iPhone/iPad）：长按选词、拖动选择手柄松手的瞬间（touchend）是
@@ -56,12 +58,13 @@
     document.addEventListener('touchend', function (event) {
         clearTimeout(debounceTimer);
         const target = (event.composedPath && event.composedPath()[0]) || event.target;
-        tryCopy(target); // 与 mouseup 相同的同步路径；空选区会自然跳过
+        lastInputWasTouch = true;
+        tryCopy(target, true); // 与 mouseup 相同的同步路径；空选区会自然跳过
     }, true);
 
     // ====== 核心逻辑 ======
 
-    function tryCopy(triggerEl) {
+    function tryCopy(triggerEl, viaTouch) {
         const selection = window.getSelection();
 
         // 防线一：焦点在输入框。WebKit / Firefox 中，输入框内部的选区不会出现在
@@ -96,7 +99,7 @@
         }
 
         // 注意：去重标记在复制成功回调里更新；失败时允许马上重试
-        copyText(text);
+        copyText(text, viaTouch === true);
     }
 
     function markCopied(text) {
@@ -125,7 +128,7 @@
         return false;
     }
 
-    function copyText(text) {
+    function copyText(text, viaTouch) {
         // 短时间去重：双击→三击等连续动作不会把同一内容反复写进剪贴板历史
         if (shouldSkipDuplicate(text)) {
             log('短时间内重复内容，跳过');
@@ -138,11 +141,21 @@
                 markCopied(text);
                 log('已自动复制:', text);
             }, function (err) {
-                log('Clipboard API 被拒，改用兜底方案:', err);
-                fallbackCopy(text);
+                log('Clipboard API 被拒:', err);
+                if (viaTouch) {
+                    // 触屏路径绝不使用兜底：隐藏 textarea 的 select() 会抢走
+                    // 选区与焦点，恢复后的编程选区没有原生手柄，会导致
+                    // iPhone 上无法继续拖动调整长选区。同步 touchend 路径
+                    // 大概率已复制成功，这里静默放弃即可。
+                    log('触屏路径跳过兜底，避免破坏原生选区');
+                } else {
+                    fallbackCopy(text);
+                }
             });
-        } else {
+        } else if (!viaTouch) {
             fallbackCopy(text);
+        } else {
+            log('非安全上下文，触屏路径跳过复制');
         }
     }
 
