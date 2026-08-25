@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Auto Copy Selected Text (Exclude Input)
-// @description  选中文字后自动复制（输入框除外）；支持鼠标、触屏、键盘选择
+// @description  选中文字后自动复制（输入框除外）；支持鼠标拖选、双击与键盘选择（macOS）
 // @match        *://*/*
 // @grant        none
 // @run-at       document-start
-// @version      1.12.0
+// @version      2.0.0
 // @license      MIT
 // @namespace    local.userscripts.auto-copy-selection
 // ==/UserScript==
@@ -14,8 +14,7 @@
 
     // ====== 配置 ======
     const CONFIG = {
-        DEBOUNCE_MS: 400,      // 手柄拖动（页面收不到其触摸事件）：选区停止变化多久后复制
-        TOUCH_QUIET_MS: 1500,  // 页面触摸静默门槛：最近该时长内有过触摸活动就不复制（手指可能仍在屏上）
+        DEBOUNCE_MS: 400,      // 选区变化兜底：停止变化多久后复制（覆盖菜单栏「全选」等场景）
         DEDUP_WINDOW_MS: 1500, // 相同内容在该时间窗内不重复写剪贴板
         MIN_LENGTH: 1,         // 去除首尾空白后的最少字符数
         DEBUG: false,          // true 时输出详细日志
@@ -30,46 +29,24 @@
 
     let lastCopiedText = '';
     let lastCopiedAt = 0;
+    let debounceTimer = null; // 选区变化兜底防抖
 
-    // ====== 触发路径：只在“松手/落键”瞬间复制，选取过程中绝不复制 ======
+    // ====== 触发路径（macOS）======
 
-    let debounceTimer = null;      // 兜底路径：页面看不到“松手”的选区变化
-    let lastTouchActivityAt = 0;   // 最近一次页面触摸活动（start/move/end/cancel）的时间戳
-
-    // 触屏：松手瞬间同步复制（长按选词、长按拖选、轻点选区）。
-    // 注意：iOS 的长按选择手势有时会被系统接管，触摸流不再送达页面
-    // （收不到 touchend）——这种情况下由下方 selectionchange 兜底复制，
-    // 两条路都通，不会出现“有时不复制”。
-    function markTouchActivity() {
-        lastTouchActivityAt = Date.now();
-    }
-    document.addEventListener('touchstart', function (event) {
-        markTouchActivity();
-        clearTimeout(debounceTimer); // 新手势开始，取消未决的兜底复制
-    }, true);
-    document.addEventListener('touchmove', markTouchActivity, { capture: true, passive: true });
-    document.addEventListener('touchcancel', function (event) {
-        markTouchActivity();
-    }, true);
-    document.addEventListener('touchend', function (event) {
-        markTouchActivity();
-        tryCopy(targetOf(event)); // 松手即复制
-    }, true);
-
-    // 鼠标：拖选松开左键的瞬间同步复制（手势上下文最完整）
+    // 1) 鼠标：拖选松开左键的瞬间同步复制（手势上下文最完整）
     document.addEventListener('mouseup', function (event) {
         if (event.button !== 0) return; // 只处理左键
         tryCopy(targetOf(event));
     }, true); // 捕获阶段：部分网站 stopPropagation 也拦不住
 
-    // 桌面双击：选词在 mouseup 之后才生效，mouseup 路径拿到的还是
-    // 旧选区，这里补一次同步复制。
+    // 2) 桌面双击：选词在 mouseup 之后才生效，mouseup 路径拿到的还是
+    //    旧选区，这里补一次同步复制。
     document.addEventListener('dblclick', function (event) {
         tryCopy(targetOf(event));
     }, true);
 
-    // 键盘：松开选择相关按键的瞬间复制。只监听与选择相关的按键，
-    // 普通滚动（空格等）不会误触发。
+    // 3) 键盘：Shift+方向键、⌘A 等选择操作，松开按键的瞬间复制。
+    //    只监听与选择相关的按键，普通滚动（空格等）不会误触发。
     document.addEventListener('keyup', function (event) {
         const key = event.key || '';
         const isSelectionKey = /^(Arrow|Shift|Home|End|Page)/.test(key) ||
@@ -77,19 +54,12 @@
         if (isSelectionKey) tryCopy(targetOf(event));
     }, true);
 
-    // 兜底：选择手柄拖动、被系统接管的长按拖选，页面都收不到 touchend，
-    // 只能通过 selectionchange 感知。拖动中事件流持续、防抖不断重置，不会复制。
-    //
-    // 触摸静默门槛：iOS 上对“手指可能还按着的原生选区”执行剪贴板操作，
-    // 会导致蓝色高亮和手柄直接消失（选区被系统收起）。因此只有当页面上
-    // 连续 TOUCH_QUIET_MS 没有任何触摸活动——即手指几乎肯定已经离开——
-    // 才允许兜底复制；复制策略本身也是三级降级，尽量不破坏选区。
+    // 4) 兜底：覆盖菜单栏「全选」等不产生鼠标/键盘事件的选区变化。
+    //    选区停止变化 400ms 后复制；拖选中的连续变化会不断重置计时，
+    //    且 mouseup/dblclick/keyup 已先行同步复制，去重会拦下重复写入。
     document.addEventListener('selectionchange', function () {
         clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(function () {
-            if (Date.now() - lastTouchActivityAt < CONFIG.TOUCH_QUIET_MS) return;
-            tryCopy(null);
-        }, CONFIG.DEBOUNCE_MS);
+        debounceTimer = setTimeout(function () { tryCopy(null); }, CONFIG.DEBOUNCE_MS);
     });
 
     function targetOf(event) {
@@ -163,9 +133,9 @@
     }
 
     // 直接对当前 DOM 选区执行 execCommand('copy')：
-    // 不需要隐藏 textarea、不触碰选区本身（复制后选区原样保留，手柄不丢）。
+    // 不需要隐藏 textarea、不触碰选区本身（复制后选区原样保留）。
     // WebKit 的用户手势标记在手势结束后会短暂存续（约 1 秒），
-    // 因此 400ms 防抖路径在 iOS 上通常也能成功。
+    // 因此 400ms 防抖路径通常也能成功。
     function tryExecCommandCopy() {
         const selection = window.getSelection();
         if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
@@ -183,10 +153,10 @@
             return;
         }
 
-        // 三级策略，确保“拖完手柄一定能复制”：
+        // 三级策略，确保各种选区方式都能完成复制：
         // 1) Clipboard API（手势有效时最优）
         // 2) 对当前选区直接 execCommand('copy')（不破坏选区）
-        // 3) 隐藏 textarea 兜底（最后手段：会短暂破坏选区，恢复后无原生手柄）
+        // 3) 隐藏 textarea 兜底（最后手段：会短暂破坏选区后还原）
         if (navigator.clipboard && window.isSecureContext) {
             navigator.clipboard.writeText(text).then(function () {
                 markCopied(text);
@@ -220,11 +190,11 @@
         try {
             textarea = document.createElement('textarea');
             textarea.value = text;
-            textarea.setAttribute('readonly', ''); // 防止移动端弹键盘
+            textarea.setAttribute('readonly', '');
             textarea.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;';
             (document.body || document.documentElement).appendChild(textarea);
             textarea.select();
-            textarea.setSelectionRange(0, text.length); // iOS 上必需
+            textarea.setSelectionRange(0, text.length); // Safari 需要显式设置选区范围
 
             const ok = document.execCommand('copy');
             if (ok) {
