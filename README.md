@@ -4,7 +4,7 @@
 
 A Safari userscript that **automatically copies any selected text to the clipboard** — mouse, touch, and keyboard selections all work. Selections made inside inputs, textareas, and rich-text editors are ignored.
 
-> Version 1.10.0 · License: MIT · Works on macOS Safari, iPhone / iPad Safari, and Chromium/Firefox userscript managers.
+> Version 1.11.0 · License: MIT · Works on macOS Safari, iPhone / iPad Safari, and Chromium/Firefox userscript managers.
 
 ---
 
@@ -15,8 +15,8 @@ A Safari userscript that **automatically copies any selected text to the clipboa
 
 | Feature | Details |
 |---|---|
-| Release-driven copying | Copies **only when you release** — finger lift, mouse-up, or key release. While your finger is still down (selecting, dragging, pausing mid-drag), nothing is ever copied |
-| Touch (iPhone / iPad) | Long-press to select, long-press-drag to extend, or tap the selection — the copy fires the instant you lift. While adjusting, brief pauses never trigger a copy |
+| Release-driven copying | Copies fire on release: finger lift, mouse-up, or key release. While you are actively dragging a selection, the moving stream of changes never triggers a copy |
+| Touch (iPhone / iPad) | Long-press to select, long-press-drag to extend, or tap the selection — the copy fires the instant you lift. If iOS takes over the touch stream mid-gesture (a long-press drag is sometimes hijacked by the native recognizer and the page never sees `touchend`), a `selectionchange` fallback completes the copy ~400 ms after the selection stops changing — no missed copies |
 | Mouse selection | Copies synchronously inside the `mouseup` user gesture — the most reliable path under Safari's strict clipboard rules |
 | Desktop double-click | Word selection applies after `mouseup`, so `dblclick` gets its own synchronous copy |
 | Keyboard selection | Shift + Arrow / Home / End / PageUp / PageDown / Ctrl-⌘+A — copies the moment the selection key is released (plain scrolling keys never trigger) |
@@ -44,7 +44,7 @@ Edit the `CONFIG` block at the top of the script:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `DEBOUNCE_MS` | `400` | Selection-handle drags are native iOS UI (the page never sees their touch events, not even the release). For those, the copy fires this long after the selection stops changing |
+| `DEBOUNCE_MS` | `400` | For selections whose release the page cannot see (native selection-handle drags, touch streams taken over by iOS): copy this long after the selection stops changing |
 | `DEDUP_WINDOW_MS` | `1500` | Skip re-copying identical text within this window |
 | `MIN_LENGTH` | `1` | Minimum trimmed length that triggers a copy |
 | `DEBUG` | `false` | Verbose console logging under the `[auto-copy]` tag |
@@ -53,13 +53,15 @@ Edit the `CONFIG` block at the top of the script:
 ### How it works
 
 ```
-touchend  (finger lift)  --> copy immediately  (never while the finger is down)
+touchend  (finger lift)  --> copy immediately (primary path; may not fire if iOS
+                              hijacks the touch stream mid-gesture)
 mouseup   (left button)  --> copy immediately
 dblclick                  --> copy immediately (desktop word selection)
 keyup    (selection keys) --> copy immediately
-selectionchange           --> only for native selection-handle drags (no page touch
-                              events, not even the release): copy 400 ms after the
-                              selection stops changing
+selectionchange           --> fallback for releases the page cannot see (native
+                              handle drags, hijacked long-press drags): copy 400 ms
+                              after the selection stops changing; a new touch
+                              cancels any pending fallback copy
 ```
 
 Every copy passes three editable-area checks (focus -> event target -> selection endpoints) before touching the clipboard. Duplicate text within the dedupe window is skipped, and the dedupe marker is only set after a copy actually succeeds, so failures can be retried immediately.
@@ -68,7 +70,7 @@ Every copy passes three editable-area checks (focus -> event target -> selection
 
 - `file://` pages are not matched (`@match *://*/*`).
 - On iOS, the system may show a one-time "Allow Paste" style confirmation for clipboard writes — grant it once per site.
-- iOS platform limit: selection-handle drags are invisible to the page (no touch events, no release signal), so after adjusting handles the copy lands ~400 ms after the selection stops changing. Pauses longer than 400 ms mid-drag may copy intermediate text; tap the selection right after releasing to copy instantly instead.
+- iOS platform limit: native selection-handle drags (and occasionally hijacked long-press drags) have no page-visible release, so the copy lands ~400 ms after the selection stops changing. Pauses longer than 400 ms mid-drag may copy intermediate text; the final copy always supersedes it — tap the selection right after releasing to copy instantly instead.
 - No external network requests; everything runs locally.
 
 ---
@@ -82,8 +84,8 @@ Every copy passes three editable-area checks (focus -> event target -> selection
 
 | 功能 | 说明 |
 |---|---|
-| 松手驱动 | **只在松手时复制**——手指抬起、鼠标松开、按键松开的瞬间。手指按住期间（选取、拖动、中途停顿）绝不会复制 |
-| 触屏（iPhone / iPad） | 长按选词、长按拖选、轻点选区——抬手瞬间复制。调整过程中短暂停顿不会触发复制 |
+| 松手驱动 | 松手即复制：手指抬起、鼠标松开、按键松开。拖动选区的过程中，连续的选区变化流不会触发复制 |
+| 触屏（iPhone / iPad） | 长按选词、长按拖选、轻点选区——抬手瞬间复制。若 iOS 在手势中途接管触摸流（长按拖选有时被原生手势识别器劫持，页面收不到 `touchend`），`selectionchange` 兜底会在选区停止变化约 400ms 后完成复制——**不会漏复制** |
 | 鼠标选择 | 在 `mouseup` 用户手势上下文里**同步**复制——Safari 对剪贴板手势校验严格，同步路径成功率最高 |
 | 桌面双击 | 双击选词在 `mouseup` 之后才生效，`dblclick` 单独补一次同步复制 |
 | 键盘选择 | Shift + 方向键 / Home / End / PageUp / PageDown / Ctrl-⌘+A——松开选择键的瞬间复制（普通滚动键永不触发） |
@@ -111,7 +113,7 @@ Tampermonkey 或 Violentmonkey 新建脚本粘贴即可（桌面端触屏路径�
 
 | 键 | 默认值 | 含义 |
 |---|---|---|
-| `DEBOUNCE_MS` | `400` | 选择手柄拖动是 iOS 原生 UI（页面看不到其触摸事件，连松手也看不到），这类场景在选区停止变化该时长后复制 |
+| `DEBOUNCE_MS` | `400` | 用于页面看不到「松手」的选区（原生选择手柄拖动、被 iOS 接管的触摸流）：选区停止变化该时长后复制 |
 | `DEDUP_WINDOW_MS` | `1500` | 相同内容在该时间窗内不重复复制 |
 | `MIN_LENGTH` | `1` | 触发复制的最少字符数（去首尾空白） |
 | `DEBUG` | `false` | 控制台输出 `[auto-copy]` 详细日志 |
@@ -120,12 +122,12 @@ Tampermonkey 或 Violentmonkey 新建脚本粘贴即可（桌面端触屏路径�
 ### 工作原理
 
 ```
-touchend（手指抬起）   --> 立即复制（手指按住期间绝不复制）
+touchend（手指抬起）   --> 立即复制（主路径；手势被 iOS 接管时不会触发）
 mouseup（左键松开）    --> 立即复制
 dblclick（双击）       --> 立即复制（桌面选词）
 keyup（选择相关按键）  --> 立即复制
-selectionchange        --> 仅用于原生选择手柄拖动（无页面触摸事件、无松手信号）：
-                           选区停止变化 400ms 后复制
+selectionchange        --> 兜底：页面看不到松手的场景（原生手柄拖动、被接管的长按
+                           拖选），选区停止变化 400ms 后复制；新手触摸会取消未决复制
 ```
 
 每次复制前经过三道可编辑区域检查（焦点 -> 事件落点 -> 选区端点）。去重标记只在复制**成功后**更新，失败可立即重试。
@@ -134,7 +136,7 @@ selectionchange        --> 仅用于原生选择手柄拖动（无页面触摸�
 
 - 不匹配 `file://` 页面（`@match *://*/*`）。
 - iOS 上系统可能弹出一次性的剪贴板写入确认，按站点允许一次即可。
-- iOS 平台限制：选择手柄拖动对页面完全不可见（无触摸事件、无松手信号），调整手柄后复制会在选区停止变化约 400ms 后落地；拖动中途停顿超过 400ms 可能复制到中间状态——松手后立刻轻点选区可立即复制。
+- iOS 平台限制：原生手柄拖动（以及偶尔被接管的长按拖选）没有页面可见的松手信号，复制在选区停止变化约 400ms 后落地；拖动中途停顿超过 400ms 可能复制到中间状态，但最终复制总会覆盖它——松手后立刻轻点选区可立即复制。
 - 无任何外部网络请求，全部本地运行。
 
 ---

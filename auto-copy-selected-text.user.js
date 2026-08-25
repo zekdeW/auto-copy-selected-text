@@ -4,7 +4,7 @@
 // @match        *://*/*
 // @grant        none
 // @run-at       document-start
-// @version      1.10.0
+// @version      1.11.0
 // @license      MIT
 // @namespace    local.userscripts.auto-copy-selection
 // ==/UserScript==
@@ -32,20 +32,17 @@
 
     // ====== 触发路径：只在“松手/落键”瞬间复制，选取过程中绝不复制 ======
 
-    let pageTouchActive = false; // 手指是否正按在页面上（页面可见的触摸流）
-    let debounceTimer = null;    // 仅用于手柄拖动这一“页面看不到松手”的场景
+    let debounceTimer = null; // 兜底路径：页面看不到“松手”的选区变化
 
-    // 触屏：手指按住期间绝不复制；松手瞬间复制
+    // 触屏：松手瞬间同步复制（长按选词、长按拖选、轻点选区）。
+    // 注意：iOS 的长按选择手势有时会被系统接管，触摸流不再送达页面
+    // （收不到 touchend）——这种情况下由下方 selectionchange 兜底复制，
+    // 两条路都通，不会出现“有时不复制”。
     document.addEventListener('touchstart', function () {
-        pageTouchActive = true;
-        clearTimeout(debounceTimer); // 有新动作，取消未决的防抖复制
-    }, true);
-    document.addEventListener('touchcancel', function () {
-        pageTouchActive = false;
+        clearTimeout(debounceTimer); // 新手势开始，取消未决的兜底复制
     }, true);
     document.addEventListener('touchend', function (event) {
-        pageTouchActive = false;
-        tryCopy(targetOf(event)); // 松手即复制：长按选词、长按拖选、轻点选区
+        tryCopy(targetOf(event)); // 松手即复制
     }, true);
 
     // 鼠标：拖选松开左键的瞬间同步复制（手势上下文最完整）
@@ -69,12 +66,11 @@
         if (isSelectionKey) tryCopy(targetOf(event));
     }, true);
 
-    // 选择手柄拖动（iOS 原生 UI，页面收不到其触摸事件，感知不到“松手”）：
+    // 兜底：选择手柄拖动、被系统接管的长按拖选，页面都收不到 touchend，
     // 只能通过 selectionchange 感知。拖动中事件流持续、防抖不断重置，不会复制；
-    // 停止变化超过 400ms 后复制——平台限制：无法区分“停顿”与“松手”，
-    // 这是能拿到的最早时机；三级复制策略保证尽量不破坏选区。
+    // 停止变化超过 400ms 后复制——无法区分“停顿”与“松手”，取能拿到的最早
+    // 时机；三级复制策略保证尽量不破坏选区。
     document.addEventListener('selectionchange', function () {
-        if (pageTouchActive) return; // 手指还按在页面上：绝不复制
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(function () { tryCopy(null); }, CONFIG.DEBOUNCE_MS);
     });
