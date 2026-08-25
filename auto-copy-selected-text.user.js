@@ -4,7 +4,7 @@
 // @match        *://*/*
 // @grant        none
 // @run-at       document-start
-// @version      1.8.0
+// @version      1.10.0
 // @license      MIT
 // @namespace    local.userscripts.auto-copy-selection
 // ==/UserScript==
@@ -14,7 +14,7 @@
 
     // ====== 配置 ======
     const CONFIG = {
-        DEBOUNCE_MS: 400,      // 触屏 / 键盘选择：选区停止变化多久后复制
+        DEBOUNCE_MS: 400,      // 手柄拖动（页面收不到其触摸事件）：选区停止变化多久后复制
         DEDUP_WINDOW_MS: 1500, // 相同内容在该时间窗内不重复写剪贴板
         MIN_LENGTH: 1,         // 去除首尾空白后的最少字符数
         DEBUG: false,          // true 时输出详细日志
@@ -27,37 +27,61 @@
     const TAG = '[auto-copy]';
     const log = (...args) => { if (CONFIG.DEBUG) console.log(TAG, ...args); };
 
-    let debounceTimer = null;
     let lastCopiedText = '';
     let lastCopiedAt = 0;
 
-    // ====== 三条触发路径 ======
+    // ====== 触发路径：只在“松手/落键”瞬间复制，选取过程中绝不复制 ======
 
-    // 1) 鼠标：在 mouseup 的用户手势上下文里“同步”复制。
-    //    Safari 对剪贴板写入的手势校验很严，异步/延时调用常被拒，
-    //    因此鼠标操作走同步路径，成功率最高。
+    let pageTouchActive = false; // 手指是否正按在页面上（页面可见的触摸流）
+    let debounceTimer = null;    // 仅用于手柄拖动这一“页面看不到松手”的场景
+
+    // 触屏：手指按住期间绝不复制；松手瞬间复制
+    document.addEventListener('touchstart', function () {
+        pageTouchActive = true;
+        clearTimeout(debounceTimer); // 有新动作，取消未决的防抖复制
+    }, true);
+    document.addEventListener('touchcancel', function () {
+        pageTouchActive = false;
+    }, true);
+    document.addEventListener('touchend', function (event) {
+        pageTouchActive = false;
+        tryCopy(targetOf(event)); // 松手即复制：长按选词、长按拖选、轻点选区
+    }, true);
+
+    // 鼠标：拖选松开左键的瞬间同步复制（手势上下文最完整）
     document.addEventListener('mouseup', function (event) {
         if (event.button !== 0) return; // 只处理左键
-        clearTimeout(debounceTimer);
-        const target = (event.composedPath && event.composedPath()[0]) || event.target;
-        tryCopy(target); // 同步执行，保留手势上下文
+        tryCopy(targetOf(event));
     }, true); // 捕获阶段：部分网站 stopPropagation 也拦不住
 
-    // 2) selectionchange：覆盖双击选词、三击选段、触屏拖动手柄、Shift+方向键。
-    //    拖拽过程中会连续触发，靠防抖等到选区稳定后再复制。
+    // 桌面双击：选词在 mouseup 之后才生效，mouseup 路径拿到的还是
+    // 旧选区，这里补一次同步复制。
+    document.addEventListener('dblclick', function (event) {
+        tryCopy(targetOf(event));
+    }, true);
+
+    // 键盘：松开选择相关按键的瞬间复制。只监听与选择相关的按键，
+    // 普通滚动（空格等）不会误触发。
+    document.addEventListener('keyup', function (event) {
+        const key = event.key || '';
+        const isSelectionKey = /^(Arrow|Shift|Home|End|Page)/.test(key) ||
+            ((event.ctrlKey || event.metaKey) && key.toLowerCase() === 'a');
+        if (isSelectionKey) tryCopy(targetOf(event));
+    }, true);
+
+    // 选择手柄拖动（iOS 原生 UI，页面收不到其触摸事件，感知不到“松手”）：
+    // 只能通过 selectionchange 感知。拖动中事件流持续、防抖不断重置，不会复制；
+    // 停止变化超过 400ms 后复制——平台限制：无法区分“停顿”与“松手”，
+    // 这是能拿到的最早时机；三级复制策略保证尽量不破坏选区。
     document.addEventListener('selectionchange', function () {
+        if (pageTouchActive) return; // 手指还按在页面上：绝不复制
         clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(tryCopy, CONFIG.DEBOUNCE_MS);
+        debounceTimer = setTimeout(function () { tryCopy(null); }, CONFIG.DEBOUNCE_MS);
     });
 
-    // 3) 触屏（iPhone/iPad）：长按选词、拖动选择手柄松手的瞬间（touchend）是
-    //    真实的用户手势时刻——在此时同步复制。若只靠 selectionchange 防抖
-    //    （400ms 后），手势已失效，iOS 会拒绝剪贴板写入。
-    document.addEventListener('touchend', function (event) {
-        clearTimeout(debounceTimer);
-        const target = (event.composedPath && event.composedPath()[0]) || event.target;
-        tryCopy(target); // 与 mouseup 相同的同步路径；空选区会自然跳过
-    }, true);
+    function targetOf(event) {
+        return (event.composedPath && event.composedPath()[0]) || event.target;
+    }
 
     // ====== 核心逻辑 ======
 
